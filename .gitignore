@@ -1,1 +1,11 @@
+# secrets
 .env
+creds.json
+
+# compiled binary (any name at the root)
+pitwall
+pitwall-*
+
+# test output
+*.test
+*.out
