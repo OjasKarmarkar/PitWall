@@ -19,7 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -248,11 +248,11 @@ func startPlayPoller(cfg config) {
 
 	if pc.GoogleCredentialsFile == "" {
 		// Caller should guard, but log clearly in case it reaches here.
-		log.Println("[play] GOOGLE_CREDENTIALS_FILE not set — poller will not start")
+		slog.Warn("play poller: GOOGLE_CREDENTIALS_FILE not set — poller will not start")
 		return
 	}
 	if pc.PlayPackageName == "" {
-		log.Println("[play] PLAY_PACKAGE_NAME not set — poller will not start")
+		slog.Warn("play poller: PLAY_PACKAGE_NAME not set — poller will not start")
 		return
 	}
 
@@ -261,13 +261,17 @@ func startPlayPoller(cfg config) {
 	tick := func() {
 		accessToken, err := getAccessToken(pc.GoogleCredentialsFile)
 		if err != nil {
-			log.Printf("[play] auth error: %v", err)
+			slog.Error("play poller: auth error", "error", err)
 			return
 		}
 
 		newStatus, versionCode, err := fetchTrackStatus(pc.PlayPackageName, pc.PlayTrack, accessToken)
 		if err != nil {
-			log.Printf("[play] API error: %v", err)
+			slog.Error("play poller: API error",
+				"package", pc.PlayPackageName,
+				"track", pc.PlayTrack,
+				"error", err,
+			)
 			return
 		}
 
@@ -279,12 +283,21 @@ func startPlayPoller(cfg config) {
 			state.lastStatus = newStatus
 			state.lastVersionCode = versionCode
 			state.seeded = true
-			log.Printf("[play] initial state — %s (version %s)", newStatus, versionCode)
+			slog.Info("play poller: initial state seeded",
+				"package", pc.PlayPackageName,
+				"track", pc.PlayTrack,
+				"status", newStatus,
+				"version", versionCode,
+			)
 			return
 		}
 
 		if newStatus == state.lastStatus {
-			log.Printf("[play] no change — %s", newStatus)
+			slog.Info("play poller: no change",
+				"package", pc.PlayPackageName,
+				"track", pc.PlayTrack,
+				"status", newStatus,
+			)
 			return
 		}
 
@@ -293,11 +306,31 @@ func startPlayPoller(cfg config) {
 		state.lastStatus = newStatus
 		state.lastVersionCode = versionCode
 
-		log.Printf("[play] status changed: %s → %s (version %s)", previousStatus, newStatus, versionCode)
+		slog.Info("play poller: status changed",
+			"package", pc.PlayPackageName,
+			"track", pc.PlayTrack,
+			"from", previousStatus,
+			"to", newStatus,
+			"version", versionCode,
+		)
 
 		if err := postPlayToSlack(cfg.SlackWebhookURL, pc.PlayPackageName, pc.PlayTrack, previousStatus, newStatus, versionCode); err != nil {
-			log.Printf("[play] Slack notification failed: %v", err)
+			slog.Error("play poller: Slack notification failed",
+				"package", pc.PlayPackageName,
+				"track", pc.PlayTrack,
+				"from", previousStatus,
+				"to", newStatus,
+				"error", err,
+			)
 			// Do not return an error — a Slack failure must never crash the poller.
+		} else {
+			slog.Info("play poller: Slack notification sent",
+				"package", pc.PlayPackageName,
+				"track", pc.PlayTrack,
+				"from", previousStatus,
+				"to", newStatus,
+				"version", versionCode,
+			)
 		}
 	}
 
@@ -308,8 +341,11 @@ func startPlayPoller(cfg config) {
 		ticker := time.NewTicker(pc.PlayPollInterval)
 		defer ticker.Stop()
 
-		log.Printf("[play] poller started — package=%s track=%s interval=%s",
-			pc.PlayPackageName, pc.PlayTrack, pc.PlayPollInterval)
+		slog.Info("play poller started",
+			"package", pc.PlayPackageName,
+			"track", pc.PlayTrack,
+			"interval", pc.PlayPollInterval,
+		)
 
 		for range ticker.C {
 			tick()

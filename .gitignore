@@ -9,3 +9,7 @@ pitwall-*
 # test output
 *.test
 *.out
+
+# logs
+pitwall.log
+pitwall-*.log

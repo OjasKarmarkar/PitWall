@@ -23,7 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -48,10 +48,10 @@ func loadConfig() config {
 		c.Port = "3000"
 	}
 	if c.AppleWebhookSecret == "" {
-		log.Println("[warn] APPLE_WEBHOOK_SECRET is not set — all signatures will fail")
+		slog.Warn("APPLE_WEBHOOK_SECRET not set — all signatures will fail")
 	}
 	if c.SlackWebhookURL == "" {
-		log.Println("[warn] SLACK_WEBHOOK_URL is not set — Slack notifications will be skipped")
+		slog.Warn("SLACK_WEBHOOK_URL not set — Slack notifications will be skipped")
 	}
 	return c
 }
@@ -153,7 +153,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Printf("[error] writeJSON encode: %v", err)
+		slog.Error("writeJSON encode failed", "error", err)
 	}
 }
 
@@ -179,20 +179,24 @@ func newWebhookHandler(cfg config) http.HandlerFunc {
 		// Cap at 1 MB to protect against runaway clients.
 		const maxBodyBytes = 1 << 20
 		rawBody, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
+		slog.Info("apple webhook: raw body", "rawBody", string(rawBody))
+		// slog.Info("apple webhook: remote headers", "remoteHeaders", r.Header)
 		if err != nil {
-			log.Printf("[error] read body: %v", err)
+			slog.Error("apple webhook: failed to read request body", "error", err)
 			writeJSON(w, http.StatusInternalServerError, apiResponse{Error: "body read error"})
 			return
 		}
 
 		sig := r.Header.Get("X-Apple-Signature")
 		if !verifyAppleSignature(rawBody, sig, cfg.AppleWebhookSecret) {
+			slog.Warn("apple webhook: invalid signature", "remote_addr", r.RemoteAddr)
 			writeJSON(w, http.StatusUnauthorized, apiResponse{Error: "invalid signature"})
 			return
 		}
 
 		var payload webhookPayload
 		if err := json.Unmarshal(rawBody, &payload); err != nil {
+			slog.Error("apple webhook: invalid JSON body", "error", err)
 			writeJSON(w, http.StatusBadRequest, apiResponse{Error: "invalid JSON"})
 			return
 		}
@@ -208,12 +212,27 @@ func newWebhookHandler(cfg config) http.HandlerFunc {
 			payload.Environment = "production"
 		}
 
+		slog.Info("apple webhook received",
+			"app", payload.AppName,
+			"status", payload.Status,
+			"environment", payload.Environment,
+		)
+
 		if err := postToSlack(cfg.SlackWebhookURL, payload.AppName, payload.Status, payload.Environment); err != nil {
-			log.Printf("[error] Slack notification failed: %v", err)
+			slog.Error("apple webhook: Slack notification failed",
+				"app", payload.AppName,
+				"status", payload.Status,
+				"error", err,
+			)
 			writeJSON(w, http.StatusInternalServerError, apiResponse{Error: "slack notification failed"})
 			return
 		}
 
+		slog.Info("apple webhook: Slack notification sent",
+			"app", payload.AppName,
+			"status", payload.Status,
+			"environment", payload.Environment,
+		)
 		writeJSON(w, http.StatusOK, apiResponse{OK: true, App: payload.AppName, Status: payload.Status})
 	}
 }
@@ -230,6 +249,7 @@ func NewServer(cfg config) *http.ServeMux {
 }
 
 func main() {
+	initLogger()
 	cfg := loadConfig()
 
 	mux := NewServer(cfg)
@@ -241,7 +261,7 @@ func main() {
 	}
 
 	addr := ":" + cfg.Port
-	log.Printf("[PitWall-go] listening on %s", addr)
+	slog.Info("PitWall listening", "addr", addr)
 
 	srv := &http.Server{
 		Addr:         addr,
@@ -252,6 +272,7 @@ func main() {
 	}
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("[fatal] server error: %v", err)
+		slog.Error("server error", "error", err)
+		os.Exit(1)
 	}
 }
