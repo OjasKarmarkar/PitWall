@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -40,7 +41,7 @@ type config struct {
 
 func loadConfig() config {
 	c := config{
-		AppleWebhookSecret: os.Getenv("APPLE_WEBHOOK_SECRET"),
+	AppleWebhookSecret: os.Getenv("APPLE_WEBHOOK_SECRET"),
 		SlackWebhookURL:    os.Getenv("SLACK_WEBHOOK_URL"),
 		Port:               os.Getenv("PORT"),
 	}
@@ -95,16 +96,22 @@ func verifyAppleSignature(rawBody []byte, signatureHeader, secret string) bool {
 	expected := mac.Sum(nil)
 
 	incoming := strings.TrimSpace(signatureHeader)
+	// Apple sends the value as "hmacsha256=<hex>", strip the prefix if present.
+	incoming = strings.TrimPrefix(incoming, "hmacsha256=")
 
-	// Decode from hex; fall through to a zero-length slice on error so the
-	// timing-safe comparison still runs (and returns false) without branching.
-	decoded, err := hex.DecodeString(incoming)
-	if err != nil {
-		// Header may be base64 — not Apple's documented format, but be lenient.
-		decoded = []byte{}
+	// Try hex first (most common), then base64.
+	// Both comparisons are timing-safe via hmac.Equal.
+	if decoded, err := hex.DecodeString(incoming); err == nil {
+		if hmac.Equal(expected, decoded) {
+			return true
+		}
 	}
-
-	return hmac.Equal(expected, decoded)
+	if decoded, err := base64.StdEncoding.DecodeString(incoming); err == nil {
+		if hmac.Equal(expected, decoded) {
+			return true
+		}
+	}
+	return false
 }
 
 // ── Slack notification ────────────────────────────────────────────────────────
@@ -188,8 +195,15 @@ func newWebhookHandler(cfg config) http.HandlerFunc {
 		}
 
 		sig := r.Header.Get("X-Apple-Signature")
+		// Log all headers and the received signature to diagnose verification failures.
+		slog.Info("apple webhook: incoming headers", "headers", r.Header)
+		slog.Info("apple webhook: signature header", "X-Apple-Signature", sig)
 		if !verifyAppleSignature(rawBody, sig, cfg.AppleWebhookSecret) {
-			slog.Warn("apple webhook: invalid signature", "remote_addr", r.RemoteAddr)
+			slog.Warn("apple webhook: invalid signature",
+				"remote_addr", r.RemoteAddr,
+				"sig_received", sig,
+				"sig_empty", sig == "",
+			)
 			writeJSON(w, http.StatusUnauthorized, apiResponse{Error: "invalid signature"})
 			return
 		}
