@@ -60,10 +60,25 @@ func loadConfig() config {
 // ── Domain types ──────────────────────────────────────────────────────────────
 
 // webhookPayload represents the JSON body Apple sends to the webhook endpoint.
+// Shape reference: App Store Connect webhook notifications.
 type webhookPayload struct {
-	AppName     string `json:"app_name"`
-	Status      string `json:"status"`
-	Environment string `json:"environment"`
+	Data struct {
+		Type       string `json:"type"`
+		ID         string `json:"id"`
+		Version    int    `json:"version"`
+		Attributes struct {
+			OldState string `json:"oldState"`
+			NewState string `json:"newState"`
+		} `json:"attributes"`
+		Relationships struct {
+			Instance struct {
+				Data struct {
+					Type string `json:"type"`
+					ID   string `json:"id"`
+				} `json:"data"`
+			} `json:"instance"`
+		} `json:"relationships"`
+	} `json:"data"`
 }
 
 // slackMessage is the payload sent to the Slack incoming webhook.
@@ -123,14 +138,14 @@ var slackClient = &http.Client{
 }
 
 // postToSlack sends a formatted message to the Slack incoming webhook.
-func postToSlack(webhookURL, appName, status, environment string) error {
+func postToSlack(webhookURL, eventType string, version int, oldState, newState, instanceID string) error {
 	if webhookURL == "" {
 		return nil
 	}
 
 	text := fmt.Sprintf(
-		"🚦 *PitWall* | App Store Update\n*App:* %s\n*Status:* %s\n*Environment:* %s",
-		appName, status, environment,
+		"🚦 *PitWall* | App Store Connect\n*Event:* %s (v%d)\n*State:* %s → %s\n*Instance ID:* %s",
+		eventType, version, oldState, newState, instanceID,
 	)
 
 	payload, err := json.Marshal(slackMessage{Text: text})
@@ -215,27 +230,24 @@ func newWebhookHandler(cfg config) http.HandlerFunc {
 			return
 		}
 
-		// Apply sensible defaults for optional fields.
-		if payload.AppName == "" {
-			payload.AppName = "unknown"
-		}
-		if payload.Status == "" {
-			payload.Status = "unknown"
-		}
-		if payload.Environment == "" {
-			payload.Environment = "production"
-		}
+		eventType := payload.Data.Type
+		version := payload.Data.Version
+		oldState := payload.Data.Attributes.OldState
+		newState := payload.Data.Attributes.NewState
+		instanceID := payload.Data.Relationships.Instance.Data.ID
 
 		slog.Info("apple webhook received",
-			"app", payload.AppName,
-			"status", payload.Status,
-			"environment", payload.Environment,
+			"eventType", eventType,
+			"version", version,
+			"oldState", oldState,
+			"newState", newState,
+			"instanceID", instanceID,
 		)
 
-		if err := postToSlack(cfg.SlackWebhookURL, payload.AppName, payload.Status, payload.Environment); err != nil {
+		if err := postToSlack(cfg.SlackWebhookURL, eventType, version, oldState, newState, instanceID); err != nil {
 			slog.Error("apple webhook: Slack notification failed",
-				"app", payload.AppName,
-				"status", payload.Status,
+				"eventType", eventType,
+				"newState", newState,
 				"error", err,
 			)
 			writeJSON(w, http.StatusInternalServerError, apiResponse{Error: "slack notification failed"})
@@ -243,11 +255,10 @@ func newWebhookHandler(cfg config) http.HandlerFunc {
 		}
 
 		slog.Info("apple webhook: Slack notification sent",
-			"app", payload.AppName,
-			"status", payload.Status,
-			"environment", payload.Environment,
+			"eventType", eventType,
+			"newState", newState,
 		)
-		writeJSON(w, http.StatusOK, apiResponse{OK: true, App: payload.AppName, Status: payload.Status})
+		writeJSON(w, http.StatusOK, apiResponse{OK: true, Status: newState})
 	}
 }
 
