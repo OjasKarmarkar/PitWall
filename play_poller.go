@@ -199,18 +199,53 @@ func fetchTrackStatus(packageName, track, accessToken string) (status, versionCo
 
 // ── Slack notification ────────────────────────────────────────────────────────
 
+// playStatusColor maps a Google Play release status to a Slack attachment color.
+func playStatusColor(status string) string {
+	switch status {
+	case "completed":
+		return "#2eb886" // green
+	case "inProgress", "draft":
+		return "#f2c744" // yellow
+	case "halted":
+		return "#e01e5a" // red
+	default:
+		return "#a8a8a8" // grey
+	}
+}
+
 // postPlayToSlack sends a Play Console status-transition message to Slack.
 func postPlayToSlack(webhookURL, packageName, track, previousStatus, newStatus, versionCode string) error {
 	if webhookURL == "" {
 		return nil
 	}
 
-	text := fmt.Sprintf(
-		"🏁 *PitWall* | Google Play Update\n*App:* %s\n*Track:* %s\n*Status:* %s → %s\n*Version:* %s",
-		packageName, track, previousStatus, newStatus, versionCode,
-	)
+	msg := slackMessage{
+		Attachments: []slackAttachment{{
+			Color: playStatusColor(newStatus),
+			Blocks: []slackBlock{
+				{
+					Type: "header",
+					Text: &slackText{Type: "plain_text", Text: "🏁 PitWall  |  Google Play", Emoji: true},
+				},
+				{
+					Type: "section",
+					Fields: []slackText{
+						{Type: "mrkdwn", Text: fmt.Sprintf("*App*\n`%s`", packageName)},
+						{Type: "mrkdwn", Text: fmt.Sprintf("*Track*\n%s", track)},
+					},
+				},
+				{
+					Type: "section",
+					Fields: []slackText{
+						{Type: "mrkdwn", Text: fmt.Sprintf("*Status*\n%s  →  *%s*", previousStatus, newStatus)},
+						{Type: "mrkdwn", Text: fmt.Sprintf("*Version*\n%s", versionCode)},
+					},
+				},
+			},
+		}},
+	}
 
-	payload, err := json.Marshal(slackMessage{Text: text})
+	payload, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal slack payload: %w", err)
 	}

@@ -82,8 +82,40 @@ type webhookPayload struct {
 }
 
 // slackMessage is the payload sent to the Slack incoming webhook.
+// Uses the attachments + Block Kit format so callers can set a color bar.
 type slackMessage struct {
-	Text string `json:"text"`
+	Attachments []slackAttachment `json:"attachments"`
+}
+
+type slackAttachment struct {
+	Color  string       `json:"color"`
+	Blocks []slackBlock `json:"blocks"`
+}
+
+type slackBlock struct {
+	Type   string      `json:"type"`
+	Text   *slackText  `json:"text,omitempty"`
+	Fields []slackText `json:"fields,omitempty"`
+}
+
+type slackText struct {
+	Type  string `json:"type"`
+	Text  string `json:"text"`
+	Emoji bool   `json:"emoji,omitempty"`
+}
+
+// appleStateColor maps an Apple build state to a Slack attachment color.
+func appleStateColor(state string) string {
+	switch strings.ToUpper(state) {
+	case "COMPLETE":
+		return "#2eb886" // green
+	case "PROCESSING":
+		return "#f2c744" // yellow
+	case "FAILED":
+		return "#e01e5a" // red
+	default:
+		return "#a8a8a8" // grey
+	}
 }
 
 // apiResponse is the JSON shape returned from /webhook and /health.
@@ -143,12 +175,32 @@ func postToSlack(webhookURL, eventType string, version int, oldState, newState, 
 		return nil
 	}
 
-	text := fmt.Sprintf(
-		"🚦 *PitWall* | App Store Connect\n*Event:* %s (v%d)\n*State:* %s → %s\n*Instance ID:* %s",
-		eventType, version, oldState, newState, instanceID,
-	)
+	msg := slackMessage{
+		Attachments: []slackAttachment{{
+			Color: appleStateColor(newState),
+			Blocks: []slackBlock{
+				{
+					Type: "header",
+					Text: &slackText{Type: "plain_text", Text: "🚦 PitWall  |  App Store Connect", Emoji: true},
+				},
+				{
+					Type: "section",
+					Fields: []slackText{
+						{Type: "mrkdwn", Text: fmt.Sprintf("*Event*\n%s  `v%d`", eventType, version)},
+						{Type: "mrkdwn", Text: fmt.Sprintf("*State*\n%s  →  *%s*", oldState, newState)},
+					},
+				},
+				{
+					Type: "section",
+					Fields: []slackText{
+						{Type: "mrkdwn", Text: fmt.Sprintf("*Instance ID*\n`%s`", instanceID)},
+					},
+				},
+			},
+		}},
+	}
 
-	payload, err := json.Marshal(slackMessage{Text: text})
+	payload, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal slack payload: %w", err)
 	}
