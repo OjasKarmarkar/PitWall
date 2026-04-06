@@ -14,6 +14,9 @@ run:
 build:
 	go build -o pitwall .
 
+build-linux:
+	GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o pitwall .
+
 ## test: run all unit tests
 test:
 	go test ./...
