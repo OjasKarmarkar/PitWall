@@ -327,11 +327,12 @@ func startPlayPoller(cfg config) {
 			return
 		}
 
-		if newStatus == state.lastStatus {
+		if newStatus == state.lastStatus && versionCode == state.lastVersionCode {
 			slog.Info("play poller: no change",
 				"package", pc.PlayPackageName,
 				"track", pc.PlayTrack,
 				"status", newStatus,
+				"version", versionCode,
 			)
 			return
 		}
