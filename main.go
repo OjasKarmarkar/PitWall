@@ -254,7 +254,6 @@ func newWebhookHandler(cfg config) http.HandlerFunc {
 		const maxBodyBytes = 1 << 20
 		rawBody, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
 		slog.Info("apple webhook: raw body", "rawBody", string(rawBody))
-		// slog.Info("apple webhook: remote headers", "remoteHeaders", r.Header)
 		if err != nil {
 			slog.Error("apple webhook: failed to read request body", "error", err)
 			writeJSON(w, http.StatusInternalServerError, apiResponse{Error: "body read error"})
@@ -262,7 +261,6 @@ func newWebhookHandler(cfg config) http.HandlerFunc {
 		}
 
 		sig := r.Header.Get("X-Apple-Signature")
-		// Log all headers and the received signature to diagnose verification failures.
 		slog.Info("apple webhook: incoming headers", "headers", r.Header)
 		slog.Info("apple webhook: signature header", "X-Apple-Signature", sig)
 		if !verifyAppleSignature(rawBody, sig, cfg.AppleWebhookSecret) {
@@ -331,9 +329,11 @@ func main() {
 
 	mux := NewServer(cfg)
 
-	// Start the Google Play release status poller only when a credentials file
-	// has been configured so the server stays functional in Apple-only deploys.
-	if os.Getenv("GOOGLE_CREDENTIALS_FILE") != "" {
+	// Start the Google Play release status poller when a credentials file and at
+	// least one app config env var is present, so the server stays functional
+	// in Apple-only deploys.
+	if os.Getenv("GOOGLE_CREDENTIALS_FILE") != "" &&
+		(os.Getenv("PLAY_APPS") != "" || os.Getenv("PLAY_PACKAGE_NAME") != "") {
 		startPlayPoller(cfg)
 	}
 
