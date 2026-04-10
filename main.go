@@ -108,6 +108,18 @@ type slackText struct {
 	Emoji bool   `json:"emoji,omitempty"`
 }
 
+// appleEventLabel returns a human-readable label for an App Store Connect event type.
+func appleEventLabel(eventType string) string {
+	switch eventType {
+	case "buildUploadStateUpdated":
+		return "Build Status Changed"
+	case "appStoreVersionAppVersionStateUpdated":
+		return "App Status Changed"
+	default:
+		return eventType
+	}
+}
+
 // appleStateColor maps an Apple build/version state to a Slack attachment color.
 func appleStateColor(state string) string {
 	switch strings.ToUpper(state) {
@@ -190,7 +202,7 @@ func postToSlack(webhookURL, eventType string, version int, oldState, newState, 
 				{
 					Type: "section",
 					Fields: []slackText{
-						{Type: "mrkdwn", Text: fmt.Sprintf("*Event*\n%s  `v%d`", eventType, version)},
+						{Type: "mrkdwn", Text: fmt.Sprintf("*Event*\n%s  `v%d`", appleEventLabel(eventType), version)},
 						{Type: "mrkdwn", Text: fmt.Sprintf("*State*\n%s  →  *%s*", oldState, newState)},
 					},
 				},
