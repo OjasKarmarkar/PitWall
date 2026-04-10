@@ -67,8 +67,12 @@ type webhookPayload struct {
 		ID         string `json:"id"`
 		Version    int    `json:"version"`
 		Attributes struct {
+			// buildUploadStateUpdated fields
 			OldState string `json:"oldState"`
 			NewState string `json:"newState"`
+			// appStoreVersionAppVersionStateUpdated fields
+			OldValue string `json:"oldValue"`
+			NewValue string `json:"newValue"`
 		} `json:"attributes"`
 		Relationships struct {
 			Instance struct {
@@ -104,14 +108,14 @@ type slackText struct {
 	Emoji bool   `json:"emoji,omitempty"`
 }
 
-// appleStateColor maps an Apple build state to a Slack attachment color.
+// appleStateColor maps an Apple build/version state to a Slack attachment color.
 func appleStateColor(state string) string {
 	switch strings.ToUpper(state) {
-	case "COMPLETE":
+	case "COMPLETE", "READY_FOR_DISTRIBUTION", "APPROVED":
 		return "#2eb886" // green
-	case "PROCESSING":
+	case "PROCESSING", "IN_REVIEW", "WAITING_FOR_REVIEW", "PENDING_DEVELOPER_RELEASE":
 		return "#f2c744" // yellow
-	case "FAILED":
+	case "FAILED", "REJECTED", "INVALID_BINARY", "DEVELOPER_REJECTED":
 		return "#e01e5a" // red
 	default:
 		return "#a8a8a8" // grey
@@ -282,9 +286,18 @@ func newWebhookHandler(cfg config) http.HandlerFunc {
 
 		eventType := payload.Data.Type
 		version := payload.Data.Version
+		instanceID := payload.Data.Relationships.Instance.Data.ID
+
+		// Normalize: buildUploadStateUpdated uses oldState/newState;
+		// appStoreVersionAppVersionStateUpdated uses oldValue/newValue.
 		oldState := payload.Data.Attributes.OldState
 		newState := payload.Data.Attributes.NewState
-		instanceID := payload.Data.Relationships.Instance.Data.ID
+		if oldState == "" {
+			oldState = payload.Data.Attributes.OldValue
+		}
+		if newState == "" {
+			newState = payload.Data.Attributes.NewValue
+		}
 
 		slog.Info("apple webhook received",
 			"eventType", eventType,
