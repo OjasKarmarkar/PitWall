@@ -12,7 +12,10 @@
 //
 // Optional env vars:
 //
-//	PORT  — TCP port to listen on (default: 3000)
+//	PORT           — TCP port to listen on (default: 3000)
+//	ASC_KEY_ID     — App Store Connect API key ID (enables build enrichment)
+//	ASC_ISSUER_ID  — App Store Connect issuer ID
+//	ASC_PRIVATE_KEY — ES256 private key content from the .p8 file
 package main
 
 import (
@@ -37,13 +40,21 @@ type config struct {
 	AppleWebhookSecret string
 	SlackWebhookURL    string
 	Port               string
+	// ASC API credentials — optional. When set, the webhook handler enriches
+	// Slack messages with version, bundle ID, and changelog fetched from ASC.
+	ASCKeyID      string
+	ASCIssuerID   string
+	ASCPrivateKey string
 }
 
 func loadConfig() config {
 	c := config{
-	AppleWebhookSecret: os.Getenv("APPLE_WEBHOOK_SECRET"),
+		AppleWebhookSecret: os.Getenv("APPLE_WEBHOOK_SECRET"),
 		SlackWebhookURL:    os.Getenv("SLACK_WEBHOOK_URL"),
 		Port:               os.Getenv("PORT"),
+		ASCKeyID:           os.Getenv("ASC_KEY_ID"),
+		ASCIssuerID:        os.Getenv("ASC_ISSUER_ID"),
+		ASCPrivateKey:      os.Getenv("ASC_PRIVATE_KEY"),
 	}
 	if c.Port == "" {
 		c.Port = "3000"
@@ -186,33 +197,53 @@ var slackClient = &http.Client{
 }
 
 // postToSlack sends a formatted message to the Slack incoming webhook.
-func postToSlack(webhookURL, eventType string, version int, oldState, newState, instanceID string) error {
+// info carries optional enrichment from the ASC API; empty fields are omitted.
+func postToSlack(webhookURL, eventType string, oldState, newState, instanceID string, info ascAppInfo) error {
 	if webhookURL == "" {
 		return nil
 	}
 
+	// Build the fields row: Event + State are always present.
+	fields := []slackText{
+		{Type: "mrkdwn", Text: fmt.Sprintf("*Event*\n%s", appleEventLabel(eventType))},
+		{Type: "mrkdwn", Text: fmt.Sprintf("*State*\n%s  →  *%s*", oldState, newState)},
+	}
+	if info.Version != "" {
+		fields = append(fields, slackText{Type: "mrkdwn", Text: fmt.Sprintf("*Version*\n%s", info.Version)})
+	}
+	if info.BundleID != "" {
+		fields = append(fields, slackText{Type: "mrkdwn", Text: fmt.Sprintf("*Bundle ID*\n%s", info.BundleID)})
+	}
+
+	blocks := []slackBlock{
+		{
+			Type: "header",
+			Text: &slackText{Type: "plain_text", Text: "🚦 PitWall  |  App Store Connect", Emoji: true},
+		},
+		{
+			Type:   "section",
+			Fields: fields,
+		},
+		{
+			Type: "section",
+			Fields: []slackText{
+				{Type: "mrkdwn", Text: fmt.Sprintf("*Instance ID*\n`%s`", instanceID)},
+			},
+		},
+	}
+
+	// Changelog gets its own section block because it can be multi-line.
+	if info.Changelog != "" {
+		blocks = append(blocks, slackBlock{
+			Type: "section",
+			Text: &slackText{Type: "mrkdwn", Text: fmt.Sprintf("*What's New*\n%s", info.Changelog)},
+		})
+	}
+
 	msg := slackMessage{
 		Attachments: []slackAttachment{{
-			Color: appleStateColor(newState),
-			Blocks: []slackBlock{
-				{
-					Type: "header",
-					Text: &slackText{Type: "plain_text", Text: "🚦 PitWall  |  App Store Connect", Emoji: true},
-				},
-				{
-					Type: "section",
-					Fields: []slackText{
-						{Type: "mrkdwn", Text: fmt.Sprintf("*Event*\n%s  `v%d`", appleEventLabel(eventType), version)},
-						{Type: "mrkdwn", Text: fmt.Sprintf("*State*\n%s  →  *%s*", oldState, newState)},
-					},
-				},
-				{
-					Type: "section",
-					Fields: []slackText{
-						{Type: "mrkdwn", Text: fmt.Sprintf("*Instance ID*\n`%s`", instanceID)},
-					},
-				},
-			},
+			Color:  appleStateColor(newState),
+			Blocks: blocks,
 		}},
 	}
 
@@ -319,7 +350,28 @@ func newWebhookHandler(cfg config) http.HandlerFunc {
 			"instanceID", instanceID,
 		)
 
-		if err := postToSlack(cfg.SlackWebhookURL, eventType, version, oldState, newState, instanceID); err != nil {
+		// Enrich the notification with version/bundle/changelog from ASC when
+		// credentials are available. Errors are logged but never fail the webhook
+		// response — Apple expects a 2xx even if enrichment is unavailable.
+		var info ascAppInfo
+		if cfg.ASCKeyID != "" && instanceID != "" {
+			switch eventType {
+			case "buildUploadStateUpdated":
+				var fetchErr error
+				info, fetchErr = fetchBuildInfo(cfg.ASCKeyID, cfg.ASCIssuerID, cfg.ASCPrivateKey, instanceID)
+				if fetchErr != nil {
+					slog.Warn("apple webhook: ASC build info fetch failed", "error", fetchErr, "instanceID", instanceID)
+				}
+			case "appStoreVersionAppVersionStateUpdated":
+				var fetchErr error
+				info, fetchErr = fetchAppStoreVersionInfo(cfg.ASCKeyID, cfg.ASCIssuerID, cfg.ASCPrivateKey, instanceID)
+				if fetchErr != nil {
+					slog.Warn("apple webhook: ASC version info fetch failed", "error", fetchErr, "instanceID", instanceID)
+				}
+			}
+		}
+
+		if err := postToSlack(cfg.SlackWebhookURL, eventType, oldState, newState, instanceID, info); err != nil {
 			slog.Error("apple webhook: Slack notification failed",
 				"eventType", eventType,
 				"newState", newState,
